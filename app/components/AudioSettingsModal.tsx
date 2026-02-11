@@ -60,7 +60,11 @@ export default function AudioSettingsModal({
 
 	useEffect(() => {
 		if (isOpen) {
-			loadDevices();
+			// Use setTimeout to avoid synchronous setState in effect
+			const timer = setTimeout(() => {
+				loadDevices();
+			}, 0);
+			return () => clearTimeout(timer);
 		}
 	}, [isOpen]);
 

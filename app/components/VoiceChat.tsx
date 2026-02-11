@@ -10,6 +10,38 @@ interface Peer {
 	stream?: MediaStream;
 }
 
+// Audio level indicator component
+const AudioLevelIndicator = ({
+	level,
+	isSpeaking,
+}: {
+	level: number;
+	isSpeaking: boolean;
+}) => {
+	const bars = 5;
+	const activeBars = Math.ceil(level * bars);
+
+	return (
+		<div className="flex gap-1 items-end h-6">
+			{Array.from({ length: bars }).map((_, i) => (
+				<div
+					key={i}
+					className={`w-1 transition-all duration-75 rounded-sm ${
+						i < activeBars
+							? isSpeaking
+								? "bg-green-500"
+								: "bg-gray-500"
+							: "bg-gray-700"
+					}`}
+					style={{
+						height: `${((i + 1) / bars) * 100}%`,
+					}}
+				/>
+			))}
+		</div>
+	);
+};
+
 export default function VoiceChat() {
 	const [isConnected, setIsConnected] = useState(false);
 	const [isMuted, setIsMuted] = useState(false);
@@ -409,38 +441,6 @@ export default function VoiceChat() {
 			peersRef.current.forEach((p) => p.peer.destroy());
 		};
 	}, []);
-
-	// Audio level indicator component
-	const AudioLevelIndicator = ({
-		level,
-		isSpeaking,
-	}: {
-		level: number;
-		isSpeaking: boolean;
-	}) => {
-		const bars = 5;
-		const activeBars = Math.ceil(level * bars);
-
-		return (
-			<div className="flex gap-1 items-end h-6">
-				{Array.from({ length: bars }).map((_, i) => (
-					<div
-						key={i}
-						className={`w-1 transition-all duration-75 rounded-sm ${
-							i < activeBars
-								? isSpeaking
-									? "bg-green-500"
-									: "bg-gray-500"
-								: "bg-gray-700"
-						}`}
-						style={{
-							height: `${((i + 1) / bars) * 100}%`,
-						}}
-					/>
-				))}
-			</div>
-		);
-	};
 
 	return (
 		<div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white p-8">

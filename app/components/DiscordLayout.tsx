@@ -9,6 +9,7 @@ import UserBar from "./UserBar";
 import CreateRoomModal from "./CreateRoomModal";
 import ToastContainer, { Toast } from "./ToastContainer";
 import AudioSettingsModal, { AudioSettings } from "./AudioSettingsModal";
+import ChatPanel, { ChatMessage } from "./ChatPanel";
 
 interface Peer {
 	id: string;
@@ -39,6 +40,7 @@ export default function DiscordLayout() {
 	const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 	const [toasts, setToasts] = useState<Toast[]>([]);
+	const [messages, setMessages] = useState<ChatMessage[]>([]);
 
 	// Voice Chat State
 	const [isConnected, setIsConnected] = useState(false);
@@ -224,6 +226,39 @@ export default function DiscordLayout() {
 				},
 			);
 
+			// Handle speaking state updates from other users
+			socket.on(
+				"speaking-state",
+				({ userId, isSpeaking }: { userId: string; isSpeaking: boolean }) => {
+					setRooms((prev) =>
+						prev.map((room) => ({
+							...room,
+							users: room.users?.map((user) =>
+								user.socketId === userId ? { ...user, isSpeaking } : user,
+							),
+						})),
+					);
+				},
+			);
+
+			// Handle chat messages
+			socket.on("chat-message", (message: ChatMessage) => {
+				setMessages((prev) => [...prev, message]);
+			});
+
+			// Handle chat history when joining a room
+			socket.on(
+				"chat-history",
+				({
+					messages: historyMessages,
+				}: {
+					roomId: string;
+					messages: ChatMessage[];
+				}) => {
+					setMessages(historyMessages);
+				},
+			);
+
 			socket.on("room-joined", ({ roomId, users }) => {
 				console.log("✅ Joined room:", roomId, "Users:", users);
 				setCurrentRoom(roomId);
@@ -341,6 +376,17 @@ export default function DiscordLayout() {
 		audioSettings.pushToTalkKey,
 		currentRoom,
 	]);
+
+	// Broadcast speaking state to server
+	useEffect(() => {
+		if (!socketRef.current || !currentRoom) return;
+
+		const isSpeaking = localAudioLevel > 0.1 && !isMuted;
+		socketRef.current.emit("speaking-state", {
+			roomId: currentRoom,
+			isSpeaking,
+		});
+	}, [localAudioLevel, isMuted, currentRoom]);
 
 	const getUserMedia = async () => {
 		try {
@@ -574,6 +620,7 @@ export default function DiscordLayout() {
 		if (socketRef.current && currentRoom) {
 			socketRef.current.emit("leave-room", { roomId: currentRoom });
 			setCurrentRoom(null);
+			setMessages([]); // Clear messages when leaving room
 		}
 
 		peersRef.current.forEach((p) => p.peer.destroy());
@@ -625,6 +672,15 @@ export default function DiscordLayout() {
 		const roomId = roomName.toLowerCase().replace(/\s+/g, "-");
 		if (socketRef.current) {
 			socketRef.current.emit("create-room", { roomId, roomName });
+		}
+	};
+
+	const handleSendMessage = (messageText: string) => {
+		if (socketRef.current && currentRoom) {
+			socketRef.current.emit("chat-message", {
+				roomId: currentRoom,
+				message: messageText,
+			});
 		}
 	};
 
@@ -803,73 +859,126 @@ export default function DiscordLayout() {
 							</div>
 						</div>
 					) : (
-						<div className="max-w-2xl mx-auto">
-							<h3 className="text-xl font-semibold mb-4">
+						<div className="max-w-4xl mx-auto">
+							<h3 className="text-xl font-semibold mb-6 text-white">
 								Voice Connected — {peers.length + 1} participant
 								{peers.length !== 0 && "s"}
 							</h3>
-							<div className="space-y-2">
+							<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 								{/* Current User */}
-								<div className="bg-gray-800 rounded-lg px-4 py-3 flex items-center justify-between">
-									<div className="flex items-center gap-3">
-										<div
-											className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-												localAudioLevel > 0.1 && !isMuted
-													? "bg-green-500 ring-4 ring-green-500/30"
-													: "bg-gray-600"
-											}`}
-										>
-											{isMuted ? "🔇" : "👤"}
+								<div className="bg-gray-800 rounded-xl p-4 border-2 border-indigo-500/30 hover:border-indigo-500/50 transition-all">
+									<div className="flex items-center gap-4">
+										{/* Avatar with speaking ring */}
+										<div className="relative">
+											<div
+												className={`w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold transition-all duration-200 ${
+													localAudioLevel > 0.1 && !isMuted
+														? "bg-green-500 ring-4 ring-green-400 shadow-lg shadow-green-500/50 scale-105"
+														: "bg-gray-600"
+												}`}
+												style={{
+													animation:
+														localAudioLevel > 0.1 && !isMuted
+															? "pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite"
+															: "none",
+												}}
+											>
+												{username.charAt(0).toUpperCase()}
+											</div>
+											{/* Status icons */}
+											<div className="absolute -bottom-1 -right-1 flex gap-1">
+												{isMuted && (
+													<div
+														className="bg-red-500 rounded-full p-1.5"
+														title="Muted"
+													>
+														<svg
+															className="w-3 h-3 text-white"
+															fill="currentColor"
+															viewBox="0 0 20 20"
+														>
+															<path
+																fillRule="evenodd"
+																d="M13.477 14.89A6 6 0 015.11 6.524l8.367 8.368zm1.414-1.414L6.524 5.11a6 6 0 018.367 8.367zM18 10a8 8 0 11-16 0 8 8 0 0116 0z"
+																clipRule="evenodd"
+															/>
+														</svg>
+													</div>
+												)}
+												{isDeafened && (
+													<div
+														className="bg-gray-900 rounded-full p-1.5"
+														title="Deafened"
+													>
+														<svg
+															className="w-3 h-3 text-white"
+															fill="currentColor"
+															viewBox="0 0 20 20"
+														>
+															<path d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" />
+														</svg>
+													</div>
+												)}
+											</div>
 										</div>
-										<span className="font-medium">
-											{username} {isMuted && "(Muted)"}
-										</span>
+										{/* User info */}
+										<div className="flex-1 min-w-0">
+											<div className="flex items-center gap-2 mb-1">
+												<span className="font-semibold text-white truncate">
+													{username}
+												</span>
+												<span className="text-xs px-2 py-0.5 bg-indigo-500 text-white rounded-full font-medium">
+													YOU
+												</span>
+											</div>
+											<AudioLevelIndicator
+												level={isMuted ? 0 : localAudioLevel}
+												isSpeaking={localAudioLevel > 0.1 && !isMuted}
+											/>
+										</div>
 									</div>
-									<AudioLevelIndicator
-										level={isMuted ? 0 : localAudioLevel}
-										isSpeaking={localAudioLevel > 0.1 && !isMuted}
-									/>
 								</div>
 
 								{/* Peers */}
 								{peers.map((peer) => {
 									const peerLevel = peerAudioLevels.get(peer.id) || 0;
 									const isSpeaking = peerLevel > 0.1;
+									const peerUsername =
+										peer.username || `User ${peer.id.substring(0, 8)}`;
 									return (
 										<div
 											key={peer.id}
-											className="bg-gray-800 rounded-lg px-4 py-3 flex items-center justify-between"
+											className="bg-gray-800 rounded-xl p-4 border-2 border-gray-700 hover:border-gray-600 transition-all"
 										>
-											<div className="flex items-center gap-3">
-												<div
-													className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-														isSpeaking
-															? "bg-green-500 ring-4 ring-green-500/30"
-															: "bg-gray-600"
-													}`}
-												>
-													👤
-													{/* Audio Settings Modal */}
-													<AudioSettingsModal
-														isOpen={isSettingsOpen}
-														onClose={() => setIsSettingsOpen(false)}
-														onSave={handleSaveSettings}
-														currentSettings={audioSettings}
-													/>
-													{/* Toast Notifications */}
-													<ToastContainer
-														toasts={toasts}
-														onRemove={removeToast}
+											<div className="flex items-center gap-4">
+												{/* Avatar with speaking ring */}
+												<div className="relative flex-shrink-0">
+													<div
+														className={`w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold transition-all duration-200 ${
+															isSpeaking
+																? "bg-green-500 ring-4 ring-green-400 shadow-lg shadow-green-500/50 scale-105"
+																: "bg-gray-600"
+														}`}
+														style={{
+															animation: isSpeaking
+																? "pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite"
+																: "none",
+														}}
+													>
+														{peerUsername.charAt(0).toUpperCase()}
+													</div>
+												</div>
+												{/* User info */}
+												<div className="flex-1 min-w-0">
+													<div className="font-semibold text-white truncate mb-1">
+														{peerUsername}
+													</div>
+													<AudioLevelIndicator
+														level={peerLevel}
+														isSpeaking={isSpeaking}
 													/>
 												</div>
-												<span className="font-medium">
-													User {peer.id.substring(0, 8)}
-												</span>
 											</div>
-											<AudioLevelIndicator
-												level={peerLevel}
-												isSpeaking={isSpeaking}
-											/>
 											<audio id={`audio-${peer.id}`} autoPlay />
 										</div>
 									);
@@ -880,12 +989,35 @@ export default function DiscordLayout() {
 				</div>
 			</div>
 
+			{/* Chat Panel - Only show when in a room */}
+			{currentRoom && (
+				<ChatPanel
+					roomName={
+						rooms.find((r) => r.id === currentRoom)?.name || currentRoom
+					}
+					messages={messages}
+					currentUsername={username}
+					onSendMessage={handleSendMessage}
+				/>
+			)}
+
 			{/* Create Room Modal */}
 			<CreateRoomModal
 				isOpen={isCreateModalOpen}
 				onClose={() => setIsCreateModalOpen(false)}
 				onCreateRoom={handleCreateRoom}
 			/>
+
+			{/* Audio Settings Modal */}
+			<AudioSettingsModal
+				isOpen={isSettingsOpen}
+				onClose={() => setIsSettingsOpen(false)}
+				onSave={handleSaveSettings}
+				currentSettings={audioSettings}
+			/>
+
+			{/* Toast Notifications */}
+			<ToastContainer toasts={toasts} onRemove={removeToast} />
 		</div>
 	);
 }

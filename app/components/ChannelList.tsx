@@ -5,6 +5,7 @@ import { useState, useEffect } from "react";
 interface VoiceUser {
 	socketId: string;
 	username: string;
+	isSpeaking?: boolean;
 }
 
 interface VoiceRoom {
@@ -154,12 +155,28 @@ export default function ChannelList({
 												{room.users?.map((user) => (
 													<div
 														key={user.socketId}
-														className="px-2 py-1 flex items-center gap-2 text-gray-400 hover:bg-gray-700/50 rounded text-sm"
+														className="px-2 py-1 flex items-center gap-2 text-gray-400 hover:bg-gray-700/50 rounded text-sm transition-colors"
 													>
-														<div className="w-6 h-6 rounded-full bg-gray-600 flex items-center justify-center text-xs">
-															{user.username.charAt(0).toUpperCase()}
+														<div className="relative">
+															<div
+																className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold transition-all duration-200 ${
+																	user.isSpeaking
+																		? "bg-green-500 ring-2 ring-green-400"
+																		: "bg-gray-600"
+																}`}
+															>
+																{user.username.charAt(0).toUpperCase()}
+															</div>
 														</div>
-														<span className="truncate">{user.username}</span>
+														<span
+															className={`truncate transition-colors ${
+																user.isSpeaking
+																	? "text-green-400 font-medium"
+																	: ""
+															}`}
+														>
+															{user.username}
+														</span>
 													</div>
 												))}
 											</div>

@@ -23,6 +23,7 @@ const io = socketIO(server, {
 const rooms = new Map(); // roomId -> Set of user objects { socketId, username }
 const userSockets = new Map(); // socketId -> { username, currentRoom }
 const availableRooms = new Map(); // roomId -> { id, name }
+const chatHistory = new Map(); // roomId -> array of messages
 
 // Initialize default rooms
 availableRooms.set("general", { id: "general", name: "General" });
@@ -94,6 +95,13 @@ io.on("connection", (socket) => {
 			users: existingUserIds,
 		});
 
+		// Send chat history to the joining user
+		const history = chatHistory.get(roomId) || [];
+		socket.emit("chat-history", {
+			roomId,
+			messages: history,
+		});
+
 		// Notify existing users about the new user
 		socket.to(roomId).emit("user-joined", {
 			userId: socket.id,
@@ -117,6 +125,44 @@ io.on("connection", (socket) => {
 	socket.on("leave-room", ({ roomId }) => {
 		console.log(`User ${socket.id} leaving room: ${roomId}`);
 		leaveRoom(socket, roomId);
+	});
+
+	// Handle speaking state updates
+	socket.on("speaking-state", ({ roomId, isSpeaking }) => {
+		const userInfo = userSockets.get(socket.id);
+		if (userInfo && userInfo.currentRoom === roomId) {
+			// Broadcast to all users in the room except sender
+			socket.to(roomId).emit("speaking-state", {
+				userId: socket.id,
+				isSpeaking,
+			});
+		}
+	});
+
+	// Handle chat messages
+	socket.on("chat-message", ({ roomId, message }) => {
+		const userInfo = userSockets.get(socket.id);
+		if (userInfo && userInfo.currentRoom === roomId) {
+			const chatMessage = {
+				id: `${socket.id}-${Date.now()}`,
+				userId: socket.id,
+				username: userInfo.username,
+				message,
+				timestamp: Date.now(),
+			};
+
+			// Store in history
+			if (!chatHistory.has(roomId)) {
+				chatHistory.set(roomId, []);
+			}
+			chatHistory.get(roomId).push(chatMessage);
+
+			// Broadcast to all users in the room (including sender)
+			io.to(roomId).emit("chat-message", chatMessage);
+			console.log(
+				`💬 Chat message in ${roomId} from ${userInfo.username}: ${message}`,
+			);
+		}
 	});
 
 	// Handle disconnection
