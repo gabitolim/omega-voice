@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, session } = require("electron");
 const path = require("path");
 
 let mainWindow;
@@ -30,7 +30,26 @@ function createWindow() {
 	});
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+	// ── Grant microphone (and camera) permissions ─────────────────────────────
+	// Required for Agora's createMicrophoneAudioTrack() to work inside Electron.
+	session.defaultSession.setPermissionRequestHandler(
+		(webContents, permission, callback) => {
+			const allowed = ["media", "mediaKeySystem", "geolocation"];
+			callback(allowed.includes(permission));
+		},
+	);
+
+	// Also needed for some Chromium versions that check synchronously.
+	session.defaultSession.setPermissionCheckHandler(
+		(webContents, permission) => {
+			const allowed = ["media", "mediaKeySystem"];
+			return allowed.includes(permission);
+		},
+	);
+
+	createWindow();
+});
 
 // Quit when all windows are closed
 app.on("window-all-closed", () => {

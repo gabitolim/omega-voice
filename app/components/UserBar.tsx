@@ -10,6 +10,7 @@ interface UserBarProps {
 	onToggleDeafen: () => void;
 	onEditUsername: (newUsername: string) => void;
 	onOpenSettings?: () => void;
+	onLogout?: () => void;
 }
 
 export default function UserBar({
@@ -20,6 +21,7 @@ export default function UserBar({
 	onToggleDeafen,
 	onEditUsername,
 	onOpenSettings,
+	onLogout,
 }: UserBarProps) {
 	const [isEditing, setIsEditing] = useState(false);
 	const [tempUsername, setTempUsername] = useState(username);
@@ -36,7 +38,7 @@ export default function UserBar({
 			{/* User Info */}
 			<div className="flex items-center gap-2 min-w-0 flex-1">
 				<div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-white font-semibold flex-shrink-0">
-					{username.charAt(0).toUpperCase()}
+					{username?.charAt(0).toUpperCase() ?? "?"}
 				</div>
 				{isEditing ? (
 					<input
@@ -107,6 +109,21 @@ export default function UserBar({
 						</svg>
 					)}
 				</button>
+				{onLogout && (
+					<button
+						onClick={onLogout}
+						className="p-2 rounded hover:bg-gray-800 transition text-gray-400 hover:text-red-400"
+						title="Log out"
+					>
+						<svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+							<path
+								fillRule="evenodd"
+								d="M3 3a1 1 0 011 1v12a1 1 0 11-2 0V4a1 1 0 011-1zm10.293 9.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L14.586 9H7a1 1 0 100 2h7.586l-1.293 1.293z"
+								clipRule="evenodd"
+							/>
+						</svg>
+					</button>
+				)}
 				<button
 					onClick={onOpenSettings}
 					className="p-2 rounded hover:bg-gray-800 transition text-gray-400 hover:text-gray-200"

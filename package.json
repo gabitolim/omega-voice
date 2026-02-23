@@ -4,12 +4,11 @@
 	"private": true,
 	"main": "main.js",
 	"scripts": {
-		"dev": "concurrently \"node server/server.js\" \"next dev\" \"wait-on http://localhost:3000 && electron .\"",
+		"dev": "concurrently \"next dev\" \"wait-on http://localhost:3000 && electron .\"",
 		"next:dev": "next dev",
 		"next:build": "next build",
 		"next:start": "next start",
-		"electron:dev": "electron .",
-		"server": "node server/server.js",
+		"electron:dev": "wait-on http://localhost:3000 && electron .",
 		"build": "next build && electron-builder",
 		"build:win": "next build && electron-builder --win",
 		"lint": "eslint"
@@ -36,23 +35,19 @@
 		}
 	},
 	"dependencies": {
+		"@supabase/supabase-js": "^2.97.0",
+		"agora-rtc-sdk-ng": "^4.24.2",
 		"next": "16.1.6",
 		"react": "19.2.3",
-		"react-dom": "19.2.3",
-		"socket.io-client": "^4.8.1",
-		"socket.io": "^4.8.1",
-		"express": "^4.21.2",
-		"cors": "^2.8.5",
-		"simple-peer": "^9.11.1"
+		"react-dom": "19.2.3"
 	},
 	"devDependencies": {
 		"@types/node": "^20",
 		"@types/react": "^19",
 		"@types/react-dom": "^19",
-		"@types/simple-peer": "^9.11.8",
 		"autoprefixer": "^10.4.20",
 		"concurrently": "^9.1.0",
-		"electron": "^40.3.0",
+		"electron": "^40.6.0",
 		"electron-builder": "^26.0.0",
 		"eslint": "^9",
 		"eslint-config-next": "16.1.6",
