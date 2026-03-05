@@ -47,39 +47,86 @@ export function useSupabaseRealtime(
 		// synchronous setState call inside the effect body.
 		if (!roomId) return;
 
-		// 1. Fetch current participants — all state updates happen inside
-		//    the async .then() callback, never in the synchronous effect body.
-		supabase
-			.from("participants")
-			.select("*")
-			.eq("room_id", roomId)
-			.then(({ data, error: fetchError }) => {
-				setIsLoading(false);
-				if (fetchError) {
-					setError(fetchError.message);
+		// 1. Fetch current participants.
+		//    Wrapping in an async IIFE lets us set isLoading = true before the
+		//    await without calling setState synchronously in the effect body.
+		(async () => {
+			setIsLoading(true);
+			const { data, error: fetchError } = await supabase
+				.from("participants")
+				.select("*")
+				.eq("room_id", roomId);
+			setIsLoading(false);
+			if (fetchError) {
+				setError(fetchError.message);
+				return;
+			}
+			setError(null);
+
+			const rows = (data as Participant[]) ?? [];
+
+			// Enrich with avatar_url from profiles (participants table doesn't store it)
+			if (rows.length > 0) {
+				const ids = rows.map((r) => r.user_id);
+				const { data: profiles } = await supabase
+					.from("profiles")
+					.select("id, avatar_url")
+					.in("id", ids);
+				if (profiles) {
+					const avatarMap = new Map(
+						(profiles as { id: string; avatar_url: string | null }[]).map(
+							(p) => [p.id, p.avatar_url],
+						),
+					);
+					setParticipants(
+						rows.map((r) => ({ ...r, avatar_url: avatarMap.get(r.user_id) ?? null })),
+					);
 					return;
 				}
-				setError(null);
-				setParticipants((data as Participant[]) ?? []);
-			});
+			}
 
-		// 2. Subscribe to changes on this room's rows.
+			setParticipants(rows);
+		})();
+
+		// 2. Subscribe to all changes on participants, filter client-side.
+		// Server-side filters on postgres_changes are unreliable with UUID PKs
+		// unless the table is in the realtime publication AND replica identity is set.
 		const channel = supabase
-			.channel(`participants:room_id=eq.${roomId}`)
+			.channel(`participants-room-${roomId}`)
 			.on(
 				"postgres_changes",
 				{
 					event: "INSERT",
 					schema: "public",
 					table: "participants",
-					filter: `room_id=eq.${roomId}`,
+				},
+				async (payload) => {
+					const p = payload.new as Participant;
+					if (p.room_id !== roomId) return;
+					// Fetch avatar_url from profiles for the new participant
+					const { data: prof } = await supabase
+						.from("profiles")
+						.select("avatar_url")
+						.eq("id", p.user_id)
+						.single();
+					const enriched = { ...p, avatar_url: prof?.avatar_url ?? null };
+					setParticipants((prev) =>
+						prev.find((x) => x.user_id === enriched.user_id) ? prev : [...prev, enriched],
+					);
+				},
+			)
+			.on(
+				"postgres_changes",
+				{
+					event: "UPDATE",
+					schema: "public",
+					table: "participants",
 				},
 				(payload) => {
-					const newParticipant = payload.new as Participant;
+					const p = payload.new as Participant;
+					if (p.room_id !== roomId) return;
 					setParticipants((prev) =>
-						prev.find((p) => p.user_id === newParticipant.user_id)
-							? prev
-							: [...prev, newParticipant],
+						prev.map((x) => (x.user_id === p.user_id ? p : x)),
 					);
 				},
 			)
@@ -89,13 +136,24 @@ export function useSupabaseRealtime(
 					event: "DELETE",
 					schema: "public",
 					table: "participants",
-					filter: `room_id=eq.${roomId}`,
 				},
 				(payload) => {
-					const deleted = payload.old as Partial<Participant>;
-					setParticipants((prev) =>
-						prev.filter((p) => p.user_id !== deleted.user_id),
-					);
+					const old = payload.old as Partial<Participant>;
+					if (old.room_id && old.room_id !== roomId) return;
+					if (old.user_id) {
+						setParticipants((prev) =>
+							prev.filter((x) => x.user_id !== old.user_id),
+						);
+					} else {
+						// Replica identity not full yet — refetch
+						supabase
+							.from("participants")
+							.select("*")
+							.eq("room_id", roomId)
+							.then(({ data }) => {
+								if (data) setParticipants(data as Participant[]);
+							});
+					}
 				},
 			)
 			.subscribe((status) => {

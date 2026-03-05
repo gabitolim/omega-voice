@@ -40,7 +40,7 @@ importers:
         specifier: ^9.1.0
         version: 9.2.1
       electron:
-        specifier: ^40.3.0
+        specifier: ^40.6.0
         version: 40.6.0
       electron-builder:
         specifier: ^26.0.0

@@ -30,25 +30,40 @@ export default function AuthScreen({ onSuccess }: AuthScreenProps) {
 
 		try {
 			if (mode === "sign-up") {
+				const trimmedUsername = username.trim();
+
+				// Pass username in auth metadata — this is stored server-side in
+				// auth.users.raw_user_meta_data regardless of email confirmation or
+				// RLS, so it is always available as a fallback.
 				const { data, error: signUpError } = await supabase.auth.signUp({
 					email: email.trim(),
 					password,
+					options: { data: { username: trimmedUsername } },
 				});
 				if (signUpError) throw signUpError;
 				const user = data.user;
 				if (!user)
 					throw new Error("Sign-up succeeded but no user was returned.");
 
+				// Also write to the profiles table. This may be blocked silently by
+				// RLS when email confirmation is enabled (no session yet), which is
+				// why we also store it in auth metadata above.
 				const { error: profileError } = await supabase
 					.from("profiles")
 					.upsert(
-						{ id: user.id, username: username.trim() },
+						{ id: user.id, username: trimmedUsername },
 						{ onConflict: "id" },
 					);
-				if (profileError) throw profileError;
+				// Log but don't hard-fail — the metadata copy is the reliable source.
+				if (profileError) {
+					console.warn(
+						"[AuthScreen] profiles upsert failed (likely RLS / unconfirmed email):",
+						profileError.message,
+					);
+				}
 
 				setStatus("success");
-				setTimeout(() => onSuccess(user.id, username.trim()), 900);
+				setTimeout(() => onSuccess(user.id, trimmedUsername), 900);
 			} else {
 				const { data, error: signInError } =
 					await supabase.auth.signInWithPassword({
@@ -62,10 +77,38 @@ export default function AuthScreen({ onSuccess }: AuthScreenProps) {
 					.select("username")
 					.eq("id", data.user.id)
 					.single();
-				if (profileError) throw profileError;
+				if (profileError && profileError.code !== "PGRST116")
+					throw profileError;
+
+				// Fall back to auth metadata when the profile row is missing or
+				// the username column is NULL (RLS blocked the upsert at sign-up time).
+				let resolvedUsername = (profile?.username ?? "") as string;
+				if (!resolvedUsername) {
+					const {
+						data: { user: authUser },
+					} = await supabase.auth.getUser();
+					resolvedUsername = (authUser?.user_metadata?.username ??
+						"") as string;
+				}
+
+				if (!resolvedUsername) {
+					throw new Error(
+						"Your account has no display name. Please sign up again or contact support.",
+					);
+				}
+
+				// Backfill the profile row if it was missing.
+				if (!profile?.username) {
+					await supabase
+						.from("profiles")
+						.upsert(
+							{ id: data.user.id, username: resolvedUsername },
+							{ onConflict: "id" },
+						);
+				}
 
 				setStatus("success");
-				setTimeout(() => onSuccess(data.user.id, profile.username), 900);
+				setTimeout(() => onSuccess(data.user.id, resolvedUsername), 900);
 			}
 		} catch (err: unknown) {
 			setErrorMsg(
@@ -79,8 +122,8 @@ export default function AuthScreen({ onSuccess }: AuthScreenProps) {
 	const isSuccess = status === "success";
 
 	return (
-		<div className="flex items-center justify-center min-h-screen bg-gray-900">
-			<div className="bg-gray-800 rounded-xl p-8 max-w-md w-full shadow-2xl border border-gray-700">
+		<div className="flex items-center justify-center min-h-[100dvh] bg-gray-900 px-4 py-8">
+			<div className="bg-gray-800 rounded-xl p-6 sm:p-8 max-w-md w-full shadow-2xl border border-gray-700">
 				{/* Logo */}
 				<div className="flex items-center justify-center mb-6">
 					<div className="w-14 h-14 rounded-full bg-indigo-600 flex items-center justify-center">

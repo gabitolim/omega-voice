@@ -72,14 +72,16 @@ export default function AudioSettingsModal({
 		if (isListeningForKey) {
 			const handleKeyDown = (e: KeyboardEvent) => {
 				e.preventDefault();
-				setSettings({ ...settings, pushToTalkKey: e.code });
+				// FIXED: Use functional update to avoid capturing stale `settings`
+				// in the closure from when the effect was set up.
+				setSettings((prev) => ({ ...prev, pushToTalkKey: e.code }));
 				setIsListeningForKey(false);
 			};
 
 			window.addEventListener("keydown", handleKeyDown);
 			return () => window.removeEventListener("keydown", handleKeyDown);
 		}
-	}, [isListeningForKey, settings]);
+	}, [isListeningForKey]);
 
 	const handleSave = () => {
 		onSave(settings);
@@ -89,8 +91,8 @@ export default function AudioSettingsModal({
 	if (!isOpen) return null;
 
 	return (
-		<div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-			<div className="bg-gray-800 rounded-lg p-6 w-full max-w-xl max-h-[90vh] overflow-y-auto">
+		<div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 px-0 sm:px-4">
+			<div className="bg-gray-800 rounded-t-2xl sm:rounded-lg p-6 w-full sm:max-w-xl max-h-[85vh] sm:max-h-[90vh] overflow-y-auto">
 				<h2 className="text-2xl font-bold text-white mb-6">Audio Settings</h2>
 
 				{/* Input Device */}

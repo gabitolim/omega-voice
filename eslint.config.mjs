@@ -3,16 +3,26 @@ import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 
 const eslintConfig = defineConfig([
-  ...nextVitals,
-  ...nextTs,
-  // Override default ignores of eslint-config-next.
-  globalIgnores([
-    // Default ignores of eslint-config-next:
-    ".next/**",
-    "out/**",
-    "build/**",
-    "next-env.d.ts",
-  ]),
+	...nextVitals,
+	...nextTs,
+	// Override default ignores of eslint-config-next.
+	globalIgnores([
+		// Default ignores of eslint-config-next:
+		".next/**",
+		"out/**",
+		"build/**",
+		"next-env.d.ts",
+	]),
+	// Electron main/preload files are Node.js CommonJS modules.
+	// Disable Next.js/TS rules that do not apply to that environment.
+	{
+		files: ["main.js", "preload.js"],
+		rules: {
+			"@typescript-eslint/no-require-imports": "off",
+			"@typescript-eslint/no-unused-vars": "off",
+			"no-unused-vars": "off",
+		},
+	},
 ]);
 
 export default eslintConfig;

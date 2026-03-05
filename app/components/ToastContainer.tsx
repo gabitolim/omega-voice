@@ -19,7 +19,7 @@ export default function ToastContainer({
 	onRemove,
 }: ToastContainerProps) {
 	return (
-		<div className="fixed bottom-4 right-4 z-50 space-y-2">
+		<div className="fixed bottom-20 md:bottom-4 right-4 z-50 space-y-2 max-w-[calc(100vw-2rem)]">
 			{toasts.map((toast) => (
 				<ToastItem key={toast.id} toast={toast} onRemove={onRemove} />
 			))}

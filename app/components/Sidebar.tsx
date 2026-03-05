@@ -1,5 +1,7 @@
 "use client";
 
+import { memo } from "react";
+
 interface Server {
 	id: string;
 	name: string;
@@ -13,14 +15,14 @@ interface SidebarProps {
 	onHomeClick: () => void;
 }
 
-export default function Sidebar({
+function Sidebar({
 	servers,
 	currentServer,
 	onServerClick,
 	onHomeClick,
 }: SidebarProps) {
 	return (
-		<div className="w-[72px] bg-gray-900 flex flex-col items-center py-3 gap-2">
+		<div className="w-[72px] h-full bg-gray-900 flex flex-col items-center py-3 gap-2">
 			{/* Home Button */}
 			<button
 				onClick={onHomeClick}
@@ -67,3 +69,5 @@ export default function Sidebar({
 		</div>
 	);
 }
+
+export default memo(Sidebar);

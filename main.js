@@ -1,6 +1,16 @@
 const { app, BrowserWindow, ipcMain, session } = require("electron");
 const path = require("path");
 
+// Required for Agora WebRTC (getUserMedia + ICE) to work inside Electron.
+app.commandLine.appendSwitch("use-fake-ui-for-media-stream", "0");
+app.commandLine.appendSwitch("enable-features", "WebRtcHideLocalIpsWithMdns");
+app.commandLine.appendSwitch(
+	"disable-features",
+	"BlockInsecurePrivateNetworkRequests",
+);
+app.commandLine.appendSwitch("ignore-certificate-errors");
+app.commandLine.appendSwitch("allow-insecure-localhost", "true");
+
 let mainWindow;
 
 function createWindow() {
@@ -75,7 +85,11 @@ ipcMain.on("window-minimize", () => {
 
 ipcMain.on("window-maximize", () => {
 	if (mainWindow) {
-		mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
+		if (mainWindow.isMaximized()) {
+			mainWindow.unmaximize();
+		} else {
+			mainWindow.maximize();
+		}
 	}
 });
 
@@ -88,12 +102,12 @@ ipcMain.handle("get-audio-devices", async () => {
 	return { devices: [] }; // Implement actual device enumeration if needed
 });
 
-ipcMain.handle("get-setting", async (event, key) => {
+ipcMain.handle("get-setting", async (_event, _key) => {
 	// Implement settings storage (can use electron-store)
 	return null;
 });
 
-ipcMain.handle("set-setting", async (event, key, value) => {
+ipcMain.handle("set-setting", async (_event, _key, _value) => {
 	// Implement settings storage
 	return true;
 });

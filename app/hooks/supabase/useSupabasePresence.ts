@@ -12,7 +12,9 @@
  *   3. When any user's Presence payload changes, update `speakingStates`.
  *
  * Usage:
- *   const { speakingStates, broadcastVolume } = useSupabasePresence(roomId, userId, username);
+ *   const { speakingStates, broadcastVolume } = useSupabasePresence(
+ *     roomId, userId, username, vadThreshold
+ *   );
  *   // speakingStates: Map<userId, boolean>
  *
  *   // Call this from your volume-indicator callback:
@@ -22,8 +24,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/app/lib/supabaseClient";
 import type { RealtimeChannel } from "@supabase/supabase-js";
-
-const SPEAKING_THRESHOLD = 0.1; // volume > 10 % = speaking
 
 interface PresencePayload {
 	userId: string;
@@ -40,11 +40,20 @@ export function useSupabasePresence(
 	roomId: string | null,
 	userId: string,
 	username: string,
+	/** Threshold from AudioSettings (0–1). Defaults to 0.1 (10%). */
+	vadThreshold: number = 0.1,
 ): UseSupabasePresenceReturn {
 	const [speakingStates, setSpeakingStates] = useState<Map<string, boolean>>(
 		new Map(),
 	);
 	const channelRef = useRef<RealtimeChannel | null>(null);
+
+	// Keep a ref so broadcastVolume always uses the latest threshold
+	// without needing to be recreated in useCallback.
+	const vadThresholdRef = useRef(vadThreshold);
+	useEffect(() => {
+		vadThresholdRef.current = vadThreshold;
+	}, [vadThreshold]);
 
 	// ── Presence channel lifecycle ─────────────────────────────────────────────
 	useEffect(() => {
@@ -97,12 +106,14 @@ export function useSupabasePresence(
 	}, [roomId, userId, username]);
 
 	// ── Broadcast speaking state ───────────────────────────────────────────────
+	// FIXED: Uses vadThresholdRef so the latest threshold is always applied
+	// without having to recreate this callback whenever the prop changes.
 	const broadcastVolume = useCallback(
 		(normalisedLevel: number) => {
 			const channel = channelRef.current;
 			if (!channel) return;
 
-			const isSpeaking = normalisedLevel > SPEAKING_THRESHOLD;
+			const isSpeaking = normalisedLevel > vadThresholdRef.current;
 
 			// Re-track with updated speaking flag (Presence merges by key).
 			channel.track({

@@ -3,38 +3,53 @@
 @tailwind utilities;
 
 :root {
-	--background: #ffffff;
-	--foreground: #171717;
+	--background: #0a0a0a;
+	--foreground: #ededed;
 }
 
-@media (prefers-color-scheme: dark) {
-	:root {
-		--background: #0a0a0a;
-		--foreground: #ededed;
-	}
+html {
+	/* Use dvh to account for mobile browser chrome (address bar, etc.) */
+	height: 100%;
 }
 
 body {
+	height: 100%;
 	background: var(--background);
 	color: var(--foreground);
 	font-family: Arial, Helvetica, sans-serif;
+	/* Prevent pull-to-refresh and overscroll effects on mobile */
+	overscroll-behavior: none;
+	/* Ensure tap targets feel snappy */
+	-webkit-tap-highlight-color: transparent;
 }
 
-/* Custom scrollbar styling */
-::-webkit-scrollbar {
-	width: 8px;
-	height: 8px;
+/* Scrollbars: slimmer and hidden on touch devices */
+@media (hover: hover) {
+	::-webkit-scrollbar {
+		width: 6px;
+		height: 6px;
+	}
+
+	::-webkit-scrollbar-track {
+		background: transparent;
+	}
+
+	::-webkit-scrollbar-thumb {
+		background: #2a2a2a;
+		border-radius: 4px;
+	}
+
+	::-webkit-scrollbar-thumb:hover {
+		background: #3a3a3a;
+	}
 }
 
-::-webkit-scrollbar-track {
-	background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-	background: #1a1a1a;
-	border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-	background: #2a2a2a;
+@media (hover: none) {
+	/* Hide scrollbar gutter on touch screens */
+	* {
+		scrollbar-width: none;
+	}
+	*::-webkit-scrollbar {
+		display: none;
+	}
 }

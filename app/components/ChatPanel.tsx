@@ -1,13 +1,14 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 
 export interface ChatMessage {
 	id: string;
 	userId: string;
 	username: string;
 	message: string;
-	timestamp: number;
+	/** ISO 8601 date string as returned by Supabase (e.g. "2025-02-25T12:00:00Z") */
+	timestamp: string;
 }
 
 interface ChatPanelProps {
@@ -17,7 +18,7 @@ interface ChatPanelProps {
 	onSendMessage: (message: string) => void;
 }
 
-export default function ChatPanel({
+function ChatPanel({
 	roomName,
 	messages,
 	currentUsername,
@@ -39,8 +40,8 @@ export default function ChatPanel({
 		}
 	};
 
-	const formatTime = (timestamp: number) => {
-		const date = new Date(timestamp);
+	const formatTime = (isoString: string) => {
+		const date = new Date(isoString);
 		return date.toLocaleTimeString("en-US", {
 			hour: "2-digit",
 			minute: "2-digit",
@@ -48,7 +49,7 @@ export default function ChatPanel({
 	};
 
 	return (
-		<div className="w-80 bg-gray-800 flex flex-col border-l border-gray-900">
+		<div className="w-full flex-1 min-h-0 bg-gray-800 flex flex-col">
 			{/* Header */}
 			<div className="h-12 px-4 flex items-center border-b border-gray-900 bg-gray-850">
 				<svg
@@ -112,20 +113,20 @@ export default function ChatPanel({
 			</div>
 
 			{/* Input */}
-			<div className="p-4 border-t border-gray-900">
+			<div className="p-3 md:p-4 border-t border-gray-900">
 				<form onSubmit={handleSubmit} className="flex gap-2">
 					<input
 						type="text"
 						value={inputMessage}
 						onChange={(e) => setInputMessage(e.target.value)}
 						placeholder="Type a message..."
-						className="flex-1 px-3 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-400"
+						className="flex-1 px-3 py-3 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-400 text-base"
 						maxLength={500}
 					/>
 					<button
 						type="submit"
 						disabled={!inputMessage.trim()}
-						className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg transition font-medium"
+						className="px-4 py-3 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg transition font-medium"
 					>
 						<svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
 							<path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
@@ -136,3 +137,5 @@ export default function ChatPanel({
 		</div>
 	);
 }
+
+export default memo(ChatPanel);

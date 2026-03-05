@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import Sidebar from "./Sidebar";
 import ChannelList from "./ChannelList";
 import UserBar from "./UserBar";
@@ -8,18 +8,24 @@ import CreateRoomModal from "./CreateRoomModal";
 import ToastContainer, { Toast } from "./ToastContainer";
 import AudioSettingsModal, { AudioSettings } from "./AudioSettingsModal";
 import ChatPanel, { ChatMessage } from "./ChatPanel";
-import VoiceRoom from "./VoiceRoom";
+import VoiceRoom, { type RoomParticipant } from "./VoiceRoom";
 import AuthScreen from "./AuthScreen";
 import { useAgoraVoice } from "@/app/hooks/agora/useAgoraVoice";
-import { supabase, type Room } from "@/app/lib/supabaseClient";
+import { supabase, type Room, type Participant } from "@/app/lib/supabaseClient";
+import { useColumnResize } from "@/app/hooks/useColumnResize";
 
 //  Types
 
-interface VoiceRoom {
+/** Represents a single row from the `rooms` table as shown in the channel list. */
+interface RoomListItem {
 	id: string;
 	name: string;
 	userCount: number;
 }
+
+//  The general server chat is pinned to this fixed room UUID.
+//  We upsert this row into the rooms table on login so FK constraints are satisfied.
+const GENERAL_CHAT_ROOM_ID = "00000000-0000-0000-0000-000000000001";
 
 //  Component
 
@@ -28,16 +34,31 @@ export default function DiscordLayout() {
 	const [username, setUsername] = useState("");
 	const [isUsernameSet, setIsUsernameSet] = useState(false);
 	const [userId, setUserId] = useState("");
+	const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+	const [tag, setTag] = useState<string | undefined>(undefined);
+	const [discriminator, setDiscriminator] = useState<string | undefined>(
+		undefined,
+	);
 
 	//  UI State
 	const [servers] = useState([{ id: "1", name: "Omega Server" }]);
 	const [currentServer] = useState("1");
-	const [rooms, setRooms] = useState<VoiceRoom[]>([]);
+	const [rooms, setRooms] = useState<RoomListItem[]>([]);
 	const [currentRoom, setCurrentRoom] = useState<string | null>(null);
 	const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 	const [toasts, setToasts] = useState<Toast[]>([]);
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
+
+	//  Participants in the current voice room (fed from VoiceRoom headless)
+	const [roomParticipants, setRoomParticipants] = useState<RoomParticipant[]>([]);
+
+	//  All participants across all rooms (for channel list display)
+	type RoomUserEntry = { user_id: string; username: string; avatar_url: string | null };
+	const [allParticipants, setAllParticipants] = useState<Map<string, RoomUserEntry[]>>(new Map());
+
+	//  Mobile navigation (which panel is visible on small screens)
+	const [mobileView, setMobileView] = useState<"channels" | "chat">("channels");
 
 	//  Audio Settings
 	const [audioSettings, setAudioSettings] = useState<AudioSettings>({
@@ -56,12 +77,12 @@ export default function DiscordLayout() {
 		leaveChannel,
 		toggleMute,
 		toggleDeafen,
+		applyOutputVolume,
 		isMuted,
 		isDeafened,
 		isJoined,
 		localVolume,
 		remoteVolumes,
-		remoteUsers,
 		error: agoraError,
 	} = useAgoraVoice();
 
@@ -77,14 +98,42 @@ export default function DiscordLayout() {
 		}
 
 		const resolveSession = async (userId: string) => {
-			const { data } = await supabase
+			// 1. Try the profiles table first.
+			const { data, error } = await supabase
 				.from("profiles")
-				.select("id, username")
+				.select("id, username, display_name, avatar_url, tag, discriminator")
 				.eq("id", userId)
 				.single();
-			if (data?.username) {
-				setUserId(data.id);
-				setUsername(data.username);
+
+			if (error && error.code !== "PGRST116") {
+				console.error("[resolveSession] Profile fetch error:", error);
+			}
+
+			const resolvedName = data?.display_name || data?.username || "";
+			if (resolvedName) {
+				setUserId(data!.id);
+				setUsername(resolvedName);
+				setAvatarUrl(data?.avatar_url ?? null);
+				setTag(data?.tag ?? undefined);
+				setDiscriminator(data?.discriminator ?? undefined);
+				setIsUsernameSet(true);
+				return;
+			}
+
+			// 2. Profile row missing or username is NULL — fall back to auth metadata.
+			const {
+				data: { user },
+			} = await supabase.auth.getUser();
+			const metaUsername = user?.user_metadata?.username as string | undefined;
+			if (metaUsername) {
+				// Backfill the profile row now that we have a valid session.
+				await supabase
+					.from("profiles")
+					.upsert({ id: userId, username: metaUsername }, { onConflict: "id" });
+
+				setUserId(userId);
+				setUsername(metaUsername);
+				setAvatarUrl(null);
 				setIsUsernameSet(true);
 			}
 		};
@@ -93,12 +142,18 @@ export default function DiscordLayout() {
 		const {
 			data: { subscription },
 		} = supabase.auth.onAuthStateChange((event, session) => {
-			if ((event === "SIGNED_IN" || event === "INITIAL_SESSION") && session?.user) {
+			if (
+				(event === "SIGNED_IN" || event === "INITIAL_SESSION") &&
+				session?.user
+			) {
 				resolveSession(session.user.id);
 			} else if (event === "SIGNED_OUT" || !session) {
 				setIsUsernameSet(false);
 				setUsername("");
 				setUserId("");
+				setAvatarUrl(null);
+				setTag(undefined);
+				setDiscriminator(undefined);
 				setCurrentRoom(null);
 				setMessages([]);
 				setRooms([]);
@@ -112,10 +167,22 @@ export default function DiscordLayout() {
 	useEffect(() => {
 		if (!isUsernameSet) return;
 
+		// Ensure the general chat room exists (upsert so FK constraints on messages are satisfied)
+		supabase
+			.from("rooms")
+			.upsert(
+				{ id: GENERAL_CHAT_ROOM_ID, name: "general", host_id: userId },
+				{ onConflict: "id", ignoreDuplicates: true },
+			)
+			.then(({ error }) => {
+				if (error) console.warn("[general room upsert]", error.message);
+			});
+
 		// Initial fetch
 		supabase
 			.from("rooms")
 			.select("*")
+			.neq("id", GENERAL_CHAT_ROOM_ID)
 			.order("created_at", { ascending: true })
 			.then(({ data, error }) => {
 				if (error) {
@@ -138,6 +205,7 @@ export default function DiscordLayout() {
 				{ event: "INSERT", schema: "public", table: "rooms" },
 				(payload) => {
 					const r = payload.new as Room;
+					if (r.id === GENERAL_CHAT_ROOM_ID) return;
 					setRooms((prev) =>
 						prev.find((x) => x.id === r.id)
 							? prev
@@ -153,56 +221,90 @@ export default function DiscordLayout() {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [isUsernameSet]);
 
-	//  Load chat messages for current room
-	useEffect(() => {
-		if (!currentRoom) {
-			setMessages([]);
+	//  Global participants subscription (all rooms, for channel list)
+	const buildAllParticipantsMap = useCallback(async () => {
+		const { data: rows } = await supabase
+			.from("participants")
+			.select("room_id, user_id, username");
+
+		if (!rows || rows.length === 0) {
+			setAllParticipants(new Map());
 			return;
 		}
 
-		// Fetch history
-		supabase
-			.from("messages")
-			.select("*")
-			.eq("room_id", currentRoom)
-			.order("created_at", { ascending: true })
-			.limit(100)
-			.then(({ data }) => {
-				if (!data) return;
-				setMessages(
-					data.map((m) => ({
-						id: m.id,
-						userId: m.user_id,
-						username: m.username,
-						message: m.content,
-						timestamp: m.created_at,
-					})),
-				);
-			});
+		const ids = [...new Set((rows as Participant[]).map((r) => r.user_id))];
+		const { data: profiles } = await supabase
+			.from("profiles")
+			.select("id, avatar_url")
+			.in("id", ids);
+		const avatarMap = new Map(
+			((profiles ?? []) as { id: string; avatar_url: string | null }[]).map(
+				(p) => [p.id, p.avatar_url],
+			),
+		);
 
-		// Realtime: new messages
+		const map = new Map<string, RoomUserEntry[]>();
+		(rows as Participant[]).forEach((r) => {
+			const entry = {
+				user_id: r.user_id,
+				username: r.username,
+				avatar_url: avatarMap.get(r.user_id) ?? null,
+			};
+			const list = map.get(r.room_id) ?? [];
+			if (!list.find((x) => x.user_id === r.user_id)) list.push(entry);
+			map.set(r.room_id, list);
+		});
+		setAllParticipants(map);
+	}, []);
+
+	useEffect(() => {
+		if (!isUsernameSet) return;
+
+		buildAllParticipantsMap();
+
 		const channel = supabase
-			.channel(`messages:room:${currentRoom}`)
+			.channel("all-participants")
 			.on(
 				"postgres_changes",
-				{
-					event: "INSERT",
-					schema: "public",
-					table: "messages",
-					filter: `room_id=eq.${currentRoom}`,
+				{ event: "INSERT", schema: "public", table: "participants" },
+				async (payload) => {
+					const p = payload.new as Participant;
+					const { data: prof } = await supabase
+						.from("profiles")
+						.select("avatar_url")
+						.eq("id", p.user_id)
+						.single();
+					setAllParticipants((prev) => {
+						const next = new Map(prev);
+						const list = next.get(p.room_id) ?? [];
+						if (!list.find((x) => x.user_id === p.user_id)) {
+							next.set(p.room_id, [
+								...list,
+								{ user_id: p.user_id, username: p.username, avatar_url: prof?.avatar_url ?? null },
+							]);
+						}
+						return next;
+					});
 				},
+			)
+			.on(
+				"postgres_changes",
+				{ event: "DELETE", schema: "public", table: "participants" },
 				(payload) => {
-					const m = payload.new;
-					setMessages((prev) => [
-						...prev,
-						{
-							id: m.id,
-							userId: m.user_id,
-							username: m.username,
-							message: m.content,
-							timestamp: m.created_at,
-						},
-					]);
+					const old = payload.old as Partial<Participant>;
+					// If old row data is missing (replica identity not FULL), refetch everything
+					if (!old.room_id || !old.user_id) {
+						buildAllParticipantsMap();
+						return;
+					}
+					setAllParticipants((prev) => {
+						const next = new Map(prev);
+						const list = (next.get(old.room_id!) ?? []).filter(
+							(x) => x.user_id !== old.user_id,
+						);
+						next.set(old.room_id!, list);
+						return next;
+					});
 				},
 			)
 			.subscribe();
@@ -210,7 +312,88 @@ export default function DiscordLayout() {
 		return () => {
 			supabase.removeChannel(channel);
 		};
-	}, [currentRoom]);
+	}, [isUsernameSet, buildAllParticipantsMap]);
+
+	//  General server chat — upsert room, fetch history, then subscribe
+	useEffect(() => {
+		if (!isUsernameSet || !userId) return;
+
+		let channel: ReturnType<typeof supabase.channel> | null = null;
+		let cancelled = false;
+
+		const init = async () => {
+			// 1. Ensure the general chat room row exists
+			await supabase
+				.from("rooms")
+				.upsert(
+					{ id: GENERAL_CHAT_ROOM_ID, name: "general", host_id: userId },
+					{ onConflict: "id", ignoreDuplicates: true },
+				);
+			
+			if (cancelled) return;
+
+			// 2. Fetch message history
+			const { data } = await supabase
+				.from("messages")
+				.select("*")
+				.eq("room_id", GENERAL_CHAT_ROOM_ID)
+				.order("created_at", { ascending: true })
+				.limit(100);
+
+			if (cancelled) return;
+
+			setMessages(
+				(data ?? []).map((m) => ({
+					id: m.id,
+					userId: m.user_id,
+					username: m.username,
+					message: m.content,
+					timestamp: m.created_at,
+				})),
+			);
+
+			// 3. Subscribe to realtime new messages
+			channel = supabase
+				.channel(`messages:general:${GENERAL_CHAT_ROOM_ID}`)
+				.on(
+					"postgres_changes",
+					{
+						event: "INSERT",
+						schema: "public",
+						table: "messages",
+						filter: `room_id=eq.${GENERAL_CHAT_ROOM_ID}`,
+					},
+					(payload) => {
+						const m = payload.new;
+						setMessages((prev) => [
+							...prev,
+							{
+								id: m.id,
+								userId: m.user_id,
+								username: m.username,
+								message: m.content,
+								timestamp: m.created_at,
+							},
+						]);
+					},
+				)
+				.subscribe();
+		};
+
+		init();
+
+		return () => {
+			cancelled = true;
+			if (channel) supabase.removeChannel(channel);
+		};
+	}, [isUsernameSet, userId]);
+
+	// Apply output volume to all remote tracks whenever the setting changes mid-session.
+	useEffect(() => {
+		if (isJoined) {
+			applyOutputVolume(audioSettings.outputVolume);
+		}
+	}, [audioSettings.outputVolume, isJoined, applyOutputVolume]);
 
 	//  Push-to-Talk
 	useEffect(() => {
@@ -243,6 +426,13 @@ export default function DiscordLayout() {
 		toggleMute,
 	]);
 
+	//  On first login, start on channels tab; chat is always available
+	useEffect(() => {
+		if (isUsernameSet) {
+			setMobileView("channels");
+		}
+	}, [isUsernameSet]);
+
 	//  Toast helper
 	const showToast = useCallback(
 		(message: string, type: Toast["type"] = "info", duration = 3000) => {
@@ -252,8 +442,10 @@ export default function DiscordLayout() {
 		[],
 	);
 
-	const removeToast = (id: string) =>
-		setToasts((prev) => prev.filter((t) => t.id !== id));
+	const removeToast = useCallback(
+		(id: string) => setToasts((prev) => prev.filter((t) => t.id !== id)),
+		[],
+	);
 
 	//  Join room
 	const joinRoom = useCallback(
@@ -270,6 +462,7 @@ export default function DiscordLayout() {
 			await joinChannel(roomId, userId, {
 				inputDeviceId: audioSettings.inputDeviceId,
 				inputVolume: audioSettings.inputVolume,
+				outputVolume: audioSettings.outputVolume,
 			});
 
 			setCurrentRoom(roomId);
@@ -291,10 +484,24 @@ export default function DiscordLayout() {
 
 	//  Leave room
 	const leaveRoom = useCallback(async () => {
+		const leavingRoom = currentRoom;
 		await leaveChannel();
 		setCurrentRoom(null);
-		setMessages([]);
-	}, [leaveChannel]);
+		setRoomParticipants([]);
+		// Eagerly remove self from allParticipants so the list updates instantly
+		if (leavingRoom) {
+			setAllParticipants((prev) => {
+				const next = new Map(prev);
+				next.set(
+					leavingRoom,
+					(next.get(leavingRoom) ?? []).filter((x) => x.user_id !== userId),
+				);
+				return next;
+			});
+			// Refetch after a short delay to pick up any other users that also left
+			setTimeout(() => buildAllParticipantsMap(), 1500);
+		}
+	}, [leaveChannel, currentRoom, userId, buildAllParticipantsMap]);
 
 	//  Create room
 	const handleCreateRoom = useCallback(
@@ -313,26 +520,24 @@ export default function DiscordLayout() {
 	//  Send message
 	const handleSendMessage = useCallback(
 		async (content: string) => {
-			if (!currentRoom) return;
 			await supabase.from("messages").insert({
-				room_id: currentRoom,
+				room_id: GENERAL_CHAT_ROOM_ID,
 				user_id: userId,
 				username,
 				content,
 			});
 		},
-		[currentRoom, userId, username],
+		[userId, username],
 	);
 
-	//  Settings
-	const handleEditUsername = async (newUsername: string) => {
-		setUsername(newUsername);
-		// Persist the change to Supabase profiles (best-effort)
-		await supabase
-			.from("profiles")
-			.update({ username: newUsername })
-			.eq("id", userId);
-	};
+	//  Profile update (called by ProfileModal via UserBar)
+	const handleProfileUpdated = useCallback(
+		(newDisplayName: string, newAvatarUrl: string | null) => {
+			setUsername(newDisplayName);
+			setAvatarUrl(newAvatarUrl);
+		},
+		[],
+	);
 
 	const handleSaveSettings = (newSettings: AudioSettings) => {
 		setAudioSettings(newSettings);
@@ -346,6 +551,39 @@ export default function DiscordLayout() {
 		await supabase.auth.signOut();
 		// onAuthStateChange will handle resetting state
 	}, [currentRoom, leaveChannel]);
+
+	// Merge live participants into rooms so ChannelList shows them Discord-style
+	// Must be before any early returns to satisfy Rules of Hooks
+	const roomsWithUsers = useMemo(() => rooms.map((r) => {
+		if (r.id === currentRoom) {
+			return {
+				...r,
+				userCount: roomParticipants.length,
+				users: roomParticipants.map((p) => ({
+					user_id: p.user_id,
+					username: p.username,
+					avatar_url: p.avatar_url ?? null,
+					isSpeaking: p.isSpeaking,
+				})),
+			};
+		}
+		const others = allParticipants.get(r.id) ?? [];
+		return {
+			...r,
+			userCount: others.length,
+			users: others.map((p) => ({ ...p, isSpeaking: false })),
+		};
+	}), [rooms, currentRoom, roomParticipants, allParticipants]);
+
+	const handleOpenSettings = useCallback(() => setIsSettingsOpen(true), []);
+	const handleOpenCreateRoom = useCallback(() => setIsCreateModalOpen(true), []);
+	const handleCloseCreateRoom = useCallback(() => setIsCreateModalOpen(false), []);
+	const handleCloseSettings = useCallback(() => setIsSettingsOpen(false), []);
+	const noop = useCallback(() => {}, []);
+
+	// Column resize
+	const [sidebarWidth, sidebarDragProps] = useColumnResize({ defaultWidth: 72, minWidth: 56, maxWidth: 120, storageKey: "col-sidebar" });
+	const [channelWidth, channelDragProps] = useColumnResize({ defaultWidth: 256, minWidth: 160, maxWidth: 400, storageKey: "col-channel" });
 
 	//  Auth screen (register / login via Supabase profiles)
 	if (!isUsernameSet) {
@@ -361,123 +599,187 @@ export default function DiscordLayout() {
 	}
 
 	//  Main layout
+
 	return (
-		<div className="flex h-screen bg-gray-700 text-white">
-			{/* Sidebar */}
-			<Sidebar
-				servers={servers}
-				currentServer={currentServer}
-				onServerClick={() => {}}
-				onHomeClick={() => {}}
-			/>
+		<div className="flex flex-col h-[100dvh] text-white overflow-hidden">
+			{/* ─ Horizontal layout (flex-row on md+) ─────────────────────── */}
+			<div className="flex-1 flex flex-row overflow-hidden min-h-0 bg-gray-700">
+				{/* Sidebar — desktop only */}
+				<div className="hidden md:flex flex-col flex-shrink-0" style={{ width: sidebarWidth }}>
+					<Sidebar
+						servers={servers}
+						currentServer={currentServer}
+						onServerClick={noop}
+						onHomeClick={noop}
+					/>
+				</div>
 
-			{/* Channel List + UserBar */}
-			<div className="flex flex-col">
-				<ChannelList
-					serverName="Omega Server"
-					rooms={rooms}
-					currentRoom={currentRoom}
-					onRoomClick={joinRoom}
-					onCreateRoom={() => setIsCreateModalOpen(true)}
-				/>
-				<UserBar
-					username={username}
-					isMuted={isMuted}
-					isDeafened={isDeafened}
-					onToggleMute={toggleMute}
-					onToggleDeafen={toggleDeafen}
-					onEditUsername={handleEditUsername}
-					onOpenSettings={() => setIsSettingsOpen(true)}
-					onLogout={handleLogout}
-				/>
-			</div>
+				{/* Drag handle: sidebar | channel list */}
+				<div
+					{...sidebarDragProps}
+					className="hidden md:flex w-1 flex-shrink-0 cursor-col-resize bg-transparent hover:bg-indigo-500/40 active:bg-indigo-500/70 transition-colors group relative"
+					title="Drag to resize"
+				>
+					<div className="absolute inset-y-0 -left-1 -right-1" />
+				</div>
 
-			{/* Main Content */}
-			<div className="flex-1 flex flex-col bg-gray-700 overflow-hidden">
-				{/* Top bar */}
-				<div className="h-12 px-4 border-b border-gray-900 flex items-center flex-shrink-0">
-					<svg
-						className="w-5 h-5 text-gray-400 mr-2"
-						fill="currentColor"
-						viewBox="0 0 20 20"
-					>
-						<path d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" />
-					</svg>
-					<h2 className="font-semibold text-white">
-						{currentRoom
-							? (rooms.find((r) => r.id === currentRoom)?.name ?? currentRoom)
-							: "No voice channel"}
-					</h2>
+				{/* Channel List + UserBar */}
+				<div
+					className={`${mobileView === "channels" ? "flex" : "hidden"} md:flex flex-col flex-shrink-0 overflow-hidden`}
+					style={{ width: channelWidth }}
+				>
+					<ChannelList
+						serverName="Omega Server"
+						rooms={roomsWithUsers}
+						currentRoom={currentRoom}
+						onRoomClick={joinRoom}
+						onCreateRoom={handleOpenCreateRoom}
+					/>
+
+					{/* Voice connected strip — shows above UserBar when in a room */}
 					{currentRoom && (
-						<button
-							onClick={leaveRoom}
-							className="ml-auto px-3 py-1 bg-red-600 hover:bg-red-700 rounded text-sm font-medium transition"
-						>
-							Disconnect
-						</button>
+						<div className="flex items-center justify-between px-3 py-2 bg-gray-900/80 border-t border-green-700/40">
+							<div className="flex items-center gap-2 min-w-0">
+								<span className="w-2 h-2 rounded-full bg-green-400 flex-shrink-0 animate-pulse" />
+								<div className="min-w-0">
+									<p className="text-green-400 text-xs font-semibold leading-tight">Voice Connected</p>
+									<p className="text-gray-400 text-[10px] truncate leading-tight">
+										{rooms.find((r) => r.id === currentRoom)?.name ?? currentRoom}
+									</p>
+								</div>
+							</div>
+							<button
+								onClick={leaveRoom}
+								className="p-1.5 rounded hover:bg-red-700/30 text-gray-400 hover:text-red-400 transition flex-shrink-0"
+								title="Disconnect from voice"
+							>
+								<svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+									<path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+								</svg>
+							</button>
+						</div>
 					)}
+
+					<UserBar
+						userId={userId}
+						username={username}
+						avatarUrl={avatarUrl}
+						tag={tag}
+						discriminator={discriminator}
+						isMuted={isMuted}
+						isDeafened={isDeafened}
+						onToggleMute={toggleMute}
+						onToggleDeafen={toggleDeafen}
+						onProfileUpdated={handleProfileUpdated}
+						onOpenSettings={handleOpenSettings}
+						onLogout={handleLogout}
+					/>
 				</div>
 
-				{/* Voice content */}
-				<div className="flex-1 overflow-y-auto p-4">
-					{!currentRoom ? (
-						<div className="flex items-center justify-center h-full">
-							<div className="text-center text-gray-400">
-								<svg
-									className="w-16 h-16 mx-auto mb-4 opacity-50"
-									fill="currentColor"
-									viewBox="0 0 20 20"
-								>
-									<path d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" />
-								</svg>
-								<p className="text-lg">Select a voice channel to get started</p>
-							</div>
+				{/* Drag handle: channel list | chat */}
+				<div
+					{...channelDragProps}
+					className="hidden md:flex w-1 flex-shrink-0 cursor-col-resize bg-transparent hover:bg-indigo-500/40 active:bg-indigo-500/70 transition-colors relative"
+					title="Drag to resize"
+				>
+					<div className="absolute inset-y-0 -left-1 -right-1" />
+				</div>
+
+				{/* Middle column: Chat */}
+				<div
+					className={`${
+						mobileView === "chat" ? "flex" : "hidden"
+					} md:flex flex-1 flex-col bg-gray-700 overflow-hidden`}
+				>
+					{/* Top bar */}
+					<div className="h-12 px-4 border-b border-gray-900 flex items-center gap-2 flex-shrink-0">
+						<svg
+							className="w-5 h-5 text-gray-400 flex-shrink-0"
+							fill="currentColor"
+							viewBox="0 0 24 24"
+						>
+							<path fill="currentColor" d="M5.068 3h13.864C20.065 3 21 3.935 21 5.068v13.864A2.068 2.068 0 0 1 18.932 21H5.068A2.068 2.068 0 0 1 3 18.932V5.068A2.068 2.068 0 0 1 5.068 3m1.989 11.862h3.476L8.648 18h1.989l1.885-3.138h2.317V13.01h-1.695l.842-1.404h.853V9.754h-1.548l.924-1.539H11.23l-.924 1.54H8.12v1.851h1.274l-.842 1.404H6.989v1.852Z"/>
+						</svg>
+						<h2 className="font-semibold text-white truncate flex-1">general</h2>
+					</div>
+
+					{/* Headless VoiceRoom — runs hooks, renders connecting/error banner only */}
+					{currentRoom && (
+						<div className="px-3 pt-3 md:px-4 md:pt-4 flex-shrink-0">
+							<VoiceRoom
+								key={currentRoom}
+								roomId={currentRoom}
+								userId={userId}
+								username={username}
+								isJoined={isJoined}
+								localVolume={localVolume}
+								remoteVolumes={remoteVolumes}
+								agoraError={agoraError}
+								vadThreshold={audioSettings.vadThreshold}
+								onParticipantsChange={setRoomParticipants}
+							/>
 						</div>
-					) : (
-						<VoiceRoom
-							key={currentRoom}
-							roomId={currentRoom}
-							roomName={
-								rooms.find((r) => r.id === currentRoom)?.name ?? currentRoom
-							}
-							userId={userId}
-							username={username}
-							isJoined={isJoined}
-							isMuted={isMuted}
-							isDeafened={isDeafened}
-							localVolume={localVolume}
-							remoteVolumes={remoteVolumes}
-							remoteUsers={remoteUsers}
-							agoraError={agoraError}
-							onToggleMute={toggleMute}
-							onToggleDeafen={toggleDeafen}
-							onLeave={leaveRoom}
-						/>
 					)}
+
+					{/* Chat fills all remaining space */}
+					<ChatPanel
+						roomName="general"
+						messages={messages}
+						currentUsername={username}
+						onSendMessage={handleSendMessage}
+					/>
 				</div>
 			</div>
 
-			{/* Chat Panel */}
-			{currentRoom && (
-				<ChatPanel
-					roomName={
-						rooms.find((r) => r.id === currentRoom)?.name ?? currentRoom
-					}
-					messages={messages}
-					currentUsername={username}
-					onSendMessage={handleSendMessage}
-				/>
-			)}
+			{/* ─ Mobile bottom navigation (2 tabs) ─────────────────────── */}
+			<nav
+				className="md:hidden flex-shrink-0 flex items-stretch bg-gray-900 border-t border-gray-700/50"
+				style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+			>
+				{/* Channels tab */}
+				<button
+					onClick={() => setMobileView("channels")}
+					className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-3 text-xs font-medium transition active:opacity-60 ${
+						mobileView === "channels" ? "text-indigo-400" : "text-gray-500"
+					}`}
+				>
+					<svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+						<path
+							fillRule="evenodd"
+							d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm1 5a1 1 0 100 2h12a1 1 0 100-2H4z"
+							clipRule="evenodd"
+						/>
+					</svg>
+					Channels
+				</button>
+
+				{/* Chat tab */}
+				<button
+					onClick={() => setMobileView("chat")}
+					className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-3 text-xs font-medium transition active:opacity-60 ${
+						mobileView === "chat" ? "text-indigo-400" : "text-gray-500"
+					}`}
+				>
+					<svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+						<path
+							fillRule="evenodd"
+							d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z"
+							clipRule="evenodd"
+						/>
+					</svg>
+					Chat
+				</button>
+			</nav>
 
 			{/* Modals */}
 			<CreateRoomModal
 				isOpen={isCreateModalOpen}
-				onClose={() => setIsCreateModalOpen(false)}
+				onClose={handleCloseCreateRoom}
 				onCreateRoom={handleCreateRoom}
 			/>
 			<AudioSettingsModal
 				isOpen={isSettingsOpen}
-				onClose={() => setIsSettingsOpen(false)}
+				onClose={handleCloseSettings}
 				onSave={handleSaveSettings}
 				currentSettings={audioSettings}
 			/>
