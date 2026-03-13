@@ -1,5 +1,36 @@
-const { app, BrowserWindow, ipcMain, session } = require("electron");
+const { app, BrowserWindow, ipcMain, session, Notification } = require("electron");
 const path = require("path");
+const fs = require("fs");
+
+// ── Persistent settings store (JSON file in userData) ────────────────────────
+let _settingsPath = null;
+let _settingsCache = null;
+
+function getSettingsPath() {
+	if (!_settingsPath) {
+		_settingsPath = path.join(app.getPath("userData"), "settings.json");
+	}
+	return _settingsPath;
+}
+
+function loadSettings() {
+	if (_settingsCache) return _settingsCache;
+	try {
+		_settingsCache = JSON.parse(fs.readFileSync(getSettingsPath(), "utf8"));
+	} catch {
+		_settingsCache = {};
+	}
+	return _settingsCache;
+}
+
+function saveSettings(data) {
+	_settingsCache = data;
+	try {
+		fs.writeFileSync(getSettingsPath(), JSON.stringify(data, null, 2), "utf8");
+	} catch (err) {
+		console.error("[settings] Failed to save:", err);
+	}
+}
 
 // Required for Agora WebRTC (getUserMedia + ICE) to work inside Electron.
 app.commandLine.appendSwitch("use-fake-ui-for-media-stream", "0");
@@ -74,9 +105,17 @@ app.on("activate", () => {
 });
 
 // IPC Handlers for preload API
-ipcMain.on("show-notification", (event, { title, body }) => {
-	// You can implement native notifications here if needed
-	console.log("Notification:", title, body);
+ipcMain.on("show-notification", (_event, { title, body }) => {
+	if (!Notification.isSupported()) return;
+	const n = new Notification({ title, body, silent: false });
+	// Clicking the notification focuses the main window
+	n.on("click", () => {
+		if (mainWindow) {
+			if (mainWindow.isMinimized()) mainWindow.restore();
+			mainWindow.focus();
+		}
+	});
+	n.show();
 });
 
 ipcMain.on("window-minimize", () => {
@@ -102,13 +141,19 @@ ipcMain.handle("get-audio-devices", async () => {
 	return { devices: [] }; // Implement actual device enumeration if needed
 });
 
-ipcMain.handle("get-setting", async (_event, _key) => {
-	// Implement settings storage (can use electron-store)
-	return null;
+ipcMain.handle("get-setting", async (_event, key) => {
+	const settings = loadSettings();
+	return key ? settings[key] ?? null : settings;
 });
 
-ipcMain.handle("set-setting", async (_event, _key, _value) => {
-	// Implement settings storage
+ipcMain.handle("set-setting", async (_event, key, value) => {
+	const settings = loadSettings();
+	if (value === undefined) {
+		delete settings[key];
+	} else {
+		settings[key] = value;
+	}
+	saveSettings(settings);
 	return true;
 });
 

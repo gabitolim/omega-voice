@@ -1,221 +1,212 @@
-# Omega Voice Chat - Setup Guide
+# Omega Voice — Setup Guide
 
-## 📦 What's Been Set Up
+## 🏗️ Architecture
 
-Your Electron + Next.js + Socket.io + WebRTC voice chat app is ready! Here's what was configured:
+Omega Voice is a Discord-style desktop voice chat app built with:
 
-### ✅ Components Created:
-
-- **preload.js** - Secure IPC bridge between Electron and React
-- **main.js** - Updated with preload script and IPC handlers
-- **VoiceChat.tsx** - Full-featured voice chat component with WebRTC
-- **server.js** - Socket.io signaling server for peer connections
-- **electron.d.ts** - TypeScript definitions for Electron API
-
-### ✅ Dependencies Added:
-
-- `socket.io-client` - Client-side Socket.io for real-time communication
-- `simple-peer` - WebRTC wrapper for peer-to-peer connections
-- `@types/simple-peer` - TypeScript types
+| Layer | Technology |
+|---|---|
+| Desktop shell | **Electron** (main process in `main.js`) |
+| Frontend | **Next.js 16 + React 19** (rendered inside Electron) |
+| Auth & Database | **Supabase** (email/password auth, Postgres, Realtime, Storage) |
+| Voice transport | **Agora RTC SDK** (token-gated, low-latency audio) |
+| Styling | **Tailwind CSS** |
 
 ---
 
-## 🚀 How to Run
+## 📋 Prerequisites
 
-### Step 1: Install Client Dependencies
+- **Node.js** ≥ 18
+- A **Supabase** project (free tier works)
+- An **Agora** account and App ID
+
+---
+
+## 🚀 Quick Start
+
+### 1. Install dependencies
 
 ```bash
 npm install
 ```
 
-### Step 2: Install Server Dependencies
+### 2. Configure environment variables
 
-```bash
-cd server
-npm install
-cd ..
+Create a `.env.local` file at the project root:
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+NEXT_PUBLIC_AGORA_APP_ID=your-agora-app-id
 ```
 
-### Step 3: Start the Signaling Server
+### 3. Set up Supabase
 
-Open a terminal and run:
+Run the following SQL in your Supabase SQL editor:
 
-```bash
-cd server
-npm start
+```sql
+-- Profiles (extends auth.users)
+create table profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  username text,
+  display_name text,
+  avatar_url text,
+  tag text unique,
+  discriminator text
+);
+
+-- Rooms (voice + text channels)
+create table rooms (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  host_id uuid references auth.users(id),
+  created_at timestamptz default now()
+);
+
+-- Participants (who's in which voice room)
+create table participants (
+  id uuid primary key default gen_random_uuid(),
+  room_id uuid references rooms(id) on delete cascade,
+  user_id uuid references auth.users(id) on delete cascade,
+  username text,
+  joined_at timestamptz default now(),
+  unique (room_id, user_id)
+);
+
+-- Messages (text chat, scoped per room)
+create table messages (
+  id uuid primary key default gen_random_uuid(),
+  room_id uuid references rooms(id) on delete cascade,
+  user_id uuid references auth.users(id) on delete cascade,
+  username text,
+  content text,
+  created_at timestamptz default now()
+);
+
+-- Friends
+create table friends (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete cascade,
+  friend_id uuid references auth.users(id) on delete cascade,
+  created_at timestamptz default now(),
+  unique (user_id, friend_id)
+);
+
+-- Friend requests
+create table friend_requests (
+  id uuid primary key default gen_random_uuid(),
+  sender_id uuid references auth.users(id) on delete cascade,
+  receiver_id uuid references auth.users(id) on delete cascade,
+  status text default 'pending',
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  unique (sender_id, receiver_id)
+);
 ```
 
-The server will start on `http://localhost:3001`
+Enable **Realtime** on the `rooms`, `participants`, `messages`, `friends`, and `friend_requests` tables in the Supabase dashboard.
 
-### Step 4: Start the Electron App
+### 4. Deploy the Agora token Edge Function
 
-Open another terminal and run:
+```bash
+supabase functions deploy get-agora-token
+```
+
+Set the secret in your Supabase project:
+
+```bash
+supabase secrets set AGORA_APP_CERTIFICATE=your-agora-certificate
+```
+
+### 5. Run in development
 
 ```bash
 npm run dev
 ```
 
-This will:
-
-- Start Next.js on port 3000
-- Launch Electron window with your app
+This starts Next.js on port 3000 and launches the Electron window automatically.
 
 ---
 
-## 🎮 How to Use
-
-1. **App launches** - You'll see the voice chat interface
-2. **Enter a room ID** - Type any room name (e.g., "my-room")
-3. **Join the room** - Click "Join" and grant microphone permissions
-4. **Share the room ID** - Others can join the same room to voice chat
-5. **Controls**:
-   - 🎤 **Mute** - Mute your microphone
-   - 🔊 **Deafen** - Stop hearing others (and auto-mutes you)
-   - **Leave Room** - Exit the voice channel
-
----
-
-## 🏗️ Architecture Overview
-
-### WebRTC Flow:
-
-1. User joins room → Gets audio stream from microphone
-2. Socket.io server coordinates peer connections
-3. WebRTC establishes direct peer-to-peer audio connections
-4. Audio streams between users with minimal latency
-
-### Files Structure:
+## 📁 Key Files
 
 ```
 omega-voice/
-├── main.js                    # Electron main process
-├── preload.js                 # Electron preload (IPC bridge)
-├── electron.d.ts              # TypeScript types
+├── main.js                          # Electron main process + IPC handlers
+├── preload.js                       # Secure IPC bridge (contextBridge)
+├── electron.d.ts                    # TypeScript types for window.electronAPI
+├── assets/
+│   └── icon.ico                     # Windows build icon
 ├── app/
 │   ├── components/
-│   │   └── VoiceChat.tsx     # Voice chat component
-│   └── page.tsx              # Main page
-├── server/
-│   ├── server.js             # Socket.io signaling server
-│   └── package.json          # Server dependencies
-└── package.json              # Client app dependencies
+│   │   ├── DiscordLayout.tsx        # Root orchestrator — all UI state lives here
+│   │   ├── Sidebar.tsx              # Server/Home sidebar (left column)
+│   │   ├── ChannelList.tsx          # Voice channel list + user presence
+│   │   ├── ChatPanel.tsx            # Text chat (per-room)
+│   │   ├── VoiceRoom.tsx            # Headless voice hooks + participant state
+│   │   ├── UserBar.tsx              # Current user strip (mute/deafen/settings)
+│   │   ├── AudioSettingsModal.tsx   # Audio device + PTT settings
+│   │   ├── AuthScreen.tsx           # Sign-in / Sign-up
+│   │   └── friends/
+│   │       ├── FriendsPanel.tsx     # Friends view
+│   │       ├── FriendsList.tsx      # Friends + pending requests list
+│   │       └── AddFriendBar.tsx     # Send request by tag#discriminator
+│   ├── hooks/
+│   │   ├── agora/useAgoraVoice.ts   # Full Agora RTC lifecycle
+│   │   ├── supabase/
+│   │   │   ├── useSupabasePresence.ts   # Speaking state broadcast
+│   │   │   └── useSupabaseRealtime.ts   # Participant DB subscriptions
+│   │   ├── useFriends.ts            # Friends CRUD + realtime
+│   │   └── useColumnResize.ts       # Draggable column widths
+│   └── lib/
+│       └── supabaseClient.ts        # Supabase client + all DB types
+└── supabase/
+    └── functions/
+        └── get-agora-token/
+            └── index.ts             # Edge function — Agora token minting
 ```
 
 ---
 
-## 🔧 Customization
+## 🎮 Features
 
-### Change Server URL
-
-In `VoiceChat.tsx`, update line ~244:
-
-```typescript
-connectToServer("http://localhost:3001"); // Change to your server URL
-```
-
-### Audio Settings
-
-Modify audio constraints in `getUserMedia()` (~86):
-
-```typescript
-audio: {
-    echoCancellation: true,    // Remove echo
-    noiseSuppression: true,    // Reduce background noise
-    autoGainControl: true,     // Normalize volume
-}
-```
-
-### Window Settings
-
-In `main.js`, adjust window properties:
-
-```javascript
-width: 1200,
-height: 800,
-// Add more options like:
-// resizable: false,
-// frame: false,
-// transparent: true,
-```
+- 🔐 **Auth** — email/password sign-up and sign-in via Supabase
+- 🎙️ **Voice channels** — Agora-powered real-time audio with mute, deafen, push-to-talk
+- 📊 **Voice Activity Detection** — speaking ring indicator around avatars
+- 💬 **Text chat** — per-room chat (switches automatically when you join a voice room)
+- 👥 **Friends** — send/accept/decline requests by `tag#discriminator`, real-time updates
+- 🔔 **Native notifications** — OS notifications for new messages and friend requests (Electron)
+- 🎛️ **Audio settings** — per-device input/output selection, volume sliders, VAD sensitivity, PTT key
+- 💾 **Persistent settings** — stored in Electron's userData via the `getSetting`/`setSetting` IPC (localStorage fallback in browser)
+- 📐 **Resizable layout** — drag the column dividers to resize sidebar, channel list, and chat
 
 ---
 
-## 🌐 Deploy to Production
-
-### Deploy Server (e.g., on Railway, Heroku, or VPS):
-
-1. Push server folder to your hosting provider
-2. Set environment variable: `PORT=3001` (or use their default)
-3. Make sure Socket.io CORS is configured for your domain
-
-### Build Desktop App:
+## 🏗️ Building for Production
 
 ```bash
-npm run build:win
+npm run build:win    # Windows installer
 ```
 
-Your `.exe` file will be in the `dist/` folder!
+Output goes to the `dist/` folder. The build icon is at `assets/icon.ico`.
 
 ---
 
 ## 🐛 Troubleshooting
 
-### Microphone not working:
-
-- Check browser/Electron permissions
-- Make sure you're on HTTPS or localhost
-- Verify no other apps are using the microphone
-
-### Can't connect to server:
-
-- Make sure server is running on port 3001
-- Check firewall settings
-- Verify the server URL in VoiceChat.tsx
-
-### No audio from peers:
-
-- Check browser console for WebRTC errors
-- Ensure both users are in the same room
-- Try refreshing both clients
-
-### Build fails:
-
-- Run `npm install` in both root and server folders
-- Delete `node_modules` and reinstall
-- Check that all dependencies are compatible
+| Problem | Solution |
+|---|---|
+| Microphone not working | Check Electron permissions; the app requests mic access on startup |
+| Voice not connecting | Verify `NEXT_PUBLIC_AGORA_APP_ID` is correct and the token edge function is deployed |
+| Auth not working | Check Supabase URL and anon key in `.env.local` |
+| Realtime not updating | Enable Realtime on all tables in the Supabase dashboard |
+| Build fails | Run `npm install`, delete `.next/` and retry |
 
 ---
 
-## 📚 Additional Features You Can Add
+## 🔒 Security
 
-- **Push to Talk** - Hold a key to transmit audio
-- **Audio Visualization** - Show waveforms while speaking
-- **Screen Sharing** - Add video tracks to WebRTC peers
-- **User Presence** - Show online/offline status
-- **Room Passwords** - Secure private rooms
-- **Recording** - Save voice conversations
-- **Text Chat** - Add messaging alongside voice
-- **User Profiles** - Avatars and usernames
-
----
-
-## 🔒 Security Notes
-
-- Current setup uses `contextIsolation: true` and `nodeIntegration: false` ✅
-- Preload script exposes only specific IPC methods ✅
-- For production: Add authentication to your Socket.io server
-- For production: Use HTTPS and secure WebSocket connections (WSS)
-- Consider adding end-to-end encryption for sensitive voice data
-
----
-
-## 📖 Learn More
-
-- **Electron Docs**: https://www.electronjs.org/docs
-- **Socket.io Docs**: https://socket.io/docs
-- **WebRTC Docs**: https://webrtc.org/getting-started/overview
-- **SimplePeer Docs**: https://github.com/feross/simple-peer
-
----
-
-Need help? Check the browser console and terminal for error messages!
+- `contextIsolation: true` and `nodeIntegration: false` in Electron ✅
+- Preload script exposes only specific IPC methods via `contextBridge` ✅
+- Agora tokens are minted server-side (Supabase Edge Function), never exposed to clients ✅
+- Supabase Row Level Security (RLS) should be enabled for production deployments

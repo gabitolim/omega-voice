@@ -124,6 +124,28 @@ export function useFriends(userId: string | null) {
     const channel = supabase
       .channel(`friends:${userId}`)
       .on('postgres_changes', {
+        event: 'INSERT', schema: 'public', table: 'friend_requests',
+        filter: `receiver_id=eq.${userId}`,
+      }, async (payload) => {
+        await fetchAll();
+        // Notify the user of the incoming friend request
+        const senderId = (payload.new as { sender_id: string }).sender_id;
+        const { data: sender } = await supabase
+          .from('profiles')
+          .select('display_name, tag, discriminator')
+          .eq('id', senderId)
+          .single();
+        const senderName = sender?.display_name ?? sender?.tag ?? 'Someone';
+        if (
+          !document.hasFocus() &&
+          typeof window !== 'undefined' &&
+          (window as Window & { electronAPI?: { showNotification: (t: string, b: string) => void } }).electronAPI
+        ) {
+          (window as Window & { electronAPI?: { showNotification: (t: string, b: string) => void } }).electronAPI!
+            .showNotification('New Friend Request', `${senderName} sent you a friend request`);
+        }
+      })
+      .on('postgres_changes', {
         event: '*', schema: 'public', table: 'friend_requests',
         filter: `receiver_id=eq.${userId}`,
       }, fetchAll)
